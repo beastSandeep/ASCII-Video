@@ -1,0 +1,302 @@
+<!doctype html>
+<html>
+  <head>
+    <title>ASCII WebGL Converter</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="js/shaders.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+      [x-cloak] { display: none !important; }
+      .sub-settings {
+        padding-left: 15px;
+        border-left: 2px solid #444;
+        margin-top: 10px;
+        margin-bottom: 15px;
+      }
+    </style>
+  </head>
+  <body x-data="appData()" x-init="init()">
+    <div id="app">
+      <div id="preview-container">
+        <video id="video" playsinline style="display: none;"></video>
+        <canvas id="gl" 
+                :style="`transform: translate(${uiPan.x}px, ${uiPan.y}px) scale(${uiScale}); cursor: ${isDragging ? 'grabbing' : 'grab'}`"
+        ></canvas>
+      </div>
+
+      <div id="sidebar" x-cloak>
+        <h1>ASCII Converter</h1>
+        
+        <details>
+          <summary>Presets</summary>
+          <div class="control-group">
+            <div class="button-row">
+              <button @click="savePreset()">Save Preset</button>
+              <button @click="$refs.presetInput.click()">Load Preset</button>
+            </div>
+            <input type="file" x-ref="presetInput" @change="loadPreset($event)" accept=".json" style="display: none;" />
+          </div>
+        </details>
+
+        <details open>
+          <summary>Source & Playback</summary>
+          <div class="control-group">
+            <label class="custom-file-upload">
+              <input type="file" @change="loadVideo($event)" accept="video/*" />
+              <span class="file-btn">Choose Video File</span>
+            </label>
+          </div>
+          <div class="control-group">
+            <div class="button-row">
+              <button @click="togglePlay" x-text="running ? 'Pause' : 'Play'"></button>
+              <button @click="useWebcam">Use Webcam</button>
+            </div>
+          </div>
+          <div class="control-group">
+            <label>Preview Volume: <span x-text="Math.round(settings.volume * 100)"></span>%</label>
+            <div class="button-row">
+              <button @click="toggleMute" x-text="settings.muted ? 'Unmute' : 'Mute'" style="flex: 0 0 80px;"></button>
+              <input type="range" x-model="settings.volume" @input="updateVolume" min="0" max="1" step="0.01" style="flex: 1;" />
+            </div>
+          </div>
+        </details>
+
+        <details open>
+          <summary>ASCII Settings</summary>
+          <div class="control-group">
+            <label>Effect Style</label>
+            <select x-model="settings.style">
+              <option value="0">ASCII Art</option>
+              <option value="1">Halftone Dots</option>
+              <option value="2">Matrix Rain</option>
+            </select>
+          </div>
+          <div class="control-group" x-show="settings.style == 0">
+            <label>Character Set</label>
+            <select x-model="settings.charset" @change="updateCharset">
+              <option value="STANDARD">Standard</option>
+              <option value="MINIMAL">Minimal</option>
+              <option value="BLOCKS">Blocks</option>
+              <option value="BINARY">Binary</option>
+              <option value="NUMERIC">Numeric</option>
+              <option value="SIMPLE">Simple</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label>Character Size: <span x-text="settings.charSize"></span>px</label>
+            <input type="range" x-model="settings.charSize" min="4" max="64" step="1" />
+          </div>
+          <div class="control-group">
+            <label>Char Spacing: <span x-text="settings.spacing"></span></label>
+            <input type="range" x-model="settings.spacing" min="0.5" max="2.0" step="0.05" />
+          </div>
+        </details>
+
+        <details>
+          <summary>UI Preview View</summary>
+          <div class="control-group">
+            <label>UI Zoom: <span x-text="uiScale.toFixed(2)"></span>x</label>
+            <p style="font-size: 0.7rem; color: #888; margin-bottom: 8px;">(Scroll on canvas to zoom, Drag to pan. Does not affect export.)</p>
+            <button @click="uiScale=1.0; uiPan={x:0, y:0};">Reset UI View</button>
+          </div>
+        </details>
+
+        <details>
+          <summary>Adjustments</summary>
+          <div class="control-group">
+            <label>Brightness: <span x-text="settings.brightness"></span></label>
+            <input type="range" x-model="settings.brightness" min="0" max="2" step="0.01" />
+          </div>
+          <div class="control-group">
+            <label>Contrast: <span x-text="settings.contrast"></span></label>
+            <input type="range" x-model="settings.contrast" min="0" max="2" step="0.01" />
+          </div>
+          <div class="control-group">
+            <label>Saturation: <span x-text="settings.saturation"></span></label>
+            <input type="range" x-model="settings.saturation" min="0" max="3" step="0.01" />
+          </div>
+          <div class="control-group">
+            <label>Sharpness: <span x-text="settings.sharpness"></span></label>
+            <input type="range" x-model="settings.sharpness" min="0" max="2" step="0.01" />
+          </div>
+          <div class="control-group">
+            <label>Gamma: <span x-text="settings.gamma"></span></label>
+            <input type="range" x-model="settings.gamma" min="0.1" max="3.0" step="0.05" />
+          </div>
+          <div class="control-group inline">
+            <label>Invert Effect</label>
+            <input type="checkbox" x-model="settings.invert" />
+          </div>
+        </details>
+
+        <details>
+          <summary>Color</summary>
+          <div class="control-group inline">
+            <label>Use Original Color</label>
+            <input type="checkbox" x-model="settings.colorMode" />
+          </div>
+          <div class="control-group inline">
+            <label>Background Color</label>
+            <input type="color" x-model="settings.bgColor" />
+          </div>
+        </details>
+
+        <details>
+          <summary>Post-Processing</summary>
+          <!-- Bloom -->
+          <div class="control-group inline">
+            <label>Bloom</label>
+            <input type="checkbox" x-model="settings.bloom" />
+          </div>
+          <div x-show="settings.bloom" class="sub-settings">
+            <div class="control-group">
+              <label>Threshold: <span x-text="settings.bloomThreshold"></span></label>
+              <input type="range" x-model="settings.bloomThreshold" min="0" max="1" step="0.01" />
+            </div>
+            <div class="control-group">
+              <label>Soft Threshold: <span x-text="settings.bloomSoft"></span></label>
+              <input type="range" x-model="settings.bloomSoft" min="0" max="1" step="0.01" />
+            </div>
+            <div class="control-group">
+              <label>Intensity: <span x-text="settings.bloomIntensity"></span></label>
+              <input type="range" x-model="settings.bloomIntensity" min="0" max="3" step="0.01" />
+            </div>
+            <div class="control-group">
+              <label>Radius: <span x-text="settings.bloomRadius"></span></label>
+              <input type="range" x-model="settings.bloomRadius" min="1" max="20" step="1" />
+            </div>
+          </div>
+
+          <!-- Grain -->
+          <div class="control-group inline">
+            <label>Grain</label>
+            <input type="checkbox" x-model="settings.grain" />
+          </div>
+          <div x-show="settings.grain" class="sub-settings">
+            <div class="control-group">
+              <label>Intensity: <span x-text="settings.grainIntensity"></span></label>
+              <input type="range" x-model="settings.grainIntensity" min="0" max="1" step="0.01" />
+            </div>
+            <div class="control-group">
+              <label>Size: <span x-text="settings.grainSize"></span></label>
+              <input type="range" x-model="settings.grainSize" min="0" max="10" step="0.1" />
+            </div>
+            <div class="control-group">
+              <label>Speed: <span x-text="settings.grainSpeed"></span></label>
+              <input type="range" x-model="settings.grainSpeed" min="0" max="5" step="0.05" />
+            </div>
+          </div>
+
+          <!-- Chromatic -->
+          <div class="control-group inline">
+            <label>Chromatic Aberration</label>
+            <input type="checkbox" x-model="settings.chromatic" />
+          </div>
+          <div x-show="settings.chromatic" class="sub-settings">
+            <div class="control-group">
+              <label>Offset: <span x-text="settings.chromaticOffset"></span></label>
+              <input type="range" x-model="settings.chromaticOffset" min="0" max="0.05" step="0.001" />
+            </div>
+          </div>
+
+          <!-- Scanlines -->
+          <div class="control-group inline">
+            <label>Scanlines</label>
+            <input type="checkbox" x-model="settings.scanlines" />
+          </div>
+          <div x-show="settings.scanlines" class="sub-settings">
+            <div class="control-group">
+              <label>Opacity: <span x-text="settings.scanlineOpacity"></span></label>
+              <input type="range" x-model="settings.scanlineOpacity" min="0" max="1" step="0.01" />
+            </div>
+            <div class="control-group">
+              <label>Spacing: <span x-text="settings.scanlineSpacing"></span></label>
+              <input type="range" x-model="settings.scanlineSpacing" min="1" max="10" step="0.1" />
+            </div>
+          </div>
+
+          <!-- Vignette -->
+          <div class="control-group inline">
+            <label>Vignette</label>
+            <input type="checkbox" x-model="settings.vignette" />
+          </div>
+          <div x-show="settings.vignette" class="sub-settings">
+            <div class="control-group">
+              <label>Intensity: <span x-text="settings.vignetteIntensity"></span></label>
+              <input type="range" x-model="settings.vignetteIntensity" min="0" max="1" step="0.01" />
+            </div>
+            <div class="control-group">
+              <label>Radius: <span x-text="settings.vignetteRadius"></span></label>
+              <input type="range" x-model="settings.vignetteRadius" min="0" max="1" step="0.01" />
+            </div>
+          </div>
+
+          <!-- CRT -->
+          <div class="control-group inline">
+            <label>CRT Curve</label>
+            <input type="checkbox" x-model="settings.crtCurve" />
+          </div>
+          <div x-show="settings.crtCurve" class="sub-settings">
+            <div class="control-group">
+              <label>Amount: <span x-text="settings.crtAmount"></span></label>
+              <input type="range" x-model="settings.crtAmount" min="0" max="0.5" step="0.01" />
+            </div>
+          </div>
+
+          <!-- Phosphor -->
+          <div class="control-group inline">
+            <label>Phosphor Glow</label>
+            <input type="checkbox" x-model="settings.phosphor" />
+          </div>
+          <div x-show="settings.phosphor" class="sub-settings">
+            <div class="control-group">
+              <label>Color</label>
+              <select x-model="settings.phosphorColor">
+                <option value="Green">Green</option>
+                <option value="Amber">Amber</option>
+                <option value="Blue">Blue</option>
+                <option value="White">White</option>
+              </select>
+            </div>
+          </div>
+        </details>
+
+        <details>
+          <summary>Snapshot & Export</summary>
+          <div class="control-group">
+            <label>Snapshot Format</label>
+            <div class="button-row">
+              <select x-model="snapshotFormat" style="flex: 1;">
+                <option value="image/png">PNG</option>
+                <option value="image/jpeg">JPEG</option>
+              </select>
+              <button @click="takeSnapshot" style="flex: 2;">Take Snapshot</button>
+            </div>
+          </div>
+          <div class="control-group inline">
+            <label>Include Audio</label>
+            <input type="checkbox" x-model="settings.recordAudio" />
+          </div>
+          <hr />
+          <div class="control-group">
+            <label>Target FPS</label>
+            <input type="number" x-model="settings.fps" min="1" max="120" />
+          </div>
+          <div class="control-group">
+            <button @click="exportVideo" class="primary" :disabled="isExporting" x-text="isExporting ? 'Exporting...' : 'Export MP4'"></button>
+            <button @click="stopRecording" x-show="isExporting && isCamera" style="margin-top: 8px; background: #e74c3c;">Stop Recording</button>
+            <div x-show="isExporting" class="status-box">
+              <progress :value="renderProgress" max="100"></progress>
+              <p x-text="renderMsg"></p>
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <script src="js/atlas.js"></script>
+    <script src="js/gl.js"></script>
+    <script src="js/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,226 @@
+body {
+  margin: 0;
+  background: #121212;
+  color: #e0e0e0;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+}
+
+#preview-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  overflow: hidden;
+}
+
+canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+}
+
+#sidebar {
+  width: 320px;
+  background: #1e1e1e;
+  padding: 24px;
+  overflow-y: auto;
+  border-left: 1px solid #333;
+}
+
+h1 {
+  margin: 0 0 24px 0;
+  font-size: 1.5rem;
+  color: #fff;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid #333;
+  margin: 24px 0;
+}
+
+.control-group {
+  margin-bottom: 20px;
+}
+
+.control-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #bbb;
+}
+
+.control-group.inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.control-group.inline label {
+  margin-bottom: 0;
+}
+
+input[type="range"] {
+  width: 100%;
+  height: 4px;
+  background: #333;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  background: #3498db;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+select {
+  width: 100%;
+  background: #333;
+  color: white;
+  border: 1px solid #444;
+  padding: 8px;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+}
+
+select:focus {
+  border-color: #3498db;
+}
+
+details {
+  margin-bottom: 8px;
+  background: #252525;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+summary {
+  padding: 12px;
+  background: #2a2a2a;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #fff;
+  list-style: none;
+  border-bottom: 1px solid #333;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+summary:hover {
+  background: #333;
+}
+
+details[open] summary {
+  border-bottom: 1px solid #444;
+}
+
+details .control-group {
+  padding: 12px;
+  margin-bottom: 0;
+}
+
+input[type="color"] {
+  background: none;
+  border: none;
+  width: 40px;
+  height: 24px;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Custom File Upload */
+.custom-file-upload {
+  display: block;
+  width: 100%;
+}
+
+.custom-file-upload input[type="file"] {
+  display: none;
+}
+
+.file-btn {
+  display: block;
+  background: #3498db;
+  color: white;
+  padding: 10px;
+  border-radius: 4px;
+  text-align: center;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.file-btn:hover {
+  background: #2980b9;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  flex: 1;
+  background: #333;
+  color: white;
+  border: none;
+  padding: 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+button:hover {
+  background: #444;
+}
+
+button.primary {
+  background: #3498db;
+}
+
+button.primary:hover {
+  background: #2980b9;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status-box {
+  margin-top: 16px;
+  padding: 12px;
+  background: #252525;
+  border-radius: 4px;
+  text-align: center;
+}
+
+progress {
+  width: 100%;
+  height: 8px;
+  margin-bottom: 8px;
+}
+
+#renderMsg {
+  font-size: 0.8rem;
+  margin: 0;
+  color: #aaa;
+}
