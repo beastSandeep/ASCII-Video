@@ -347,9 +347,17 @@ function appData() {
       
       this.isExporting = true;
       this.renderProgress = 0;
-      this.renderMsg = this.isCamera ? "Recording live..." : "Capturing GPU...";
+      this.renderMsg = "Initializing...";
 
-      const videoStream = this.canvas.captureStream(60);
+      // Initialize session
+      const initRes = await fetch("/upload-init", { method: "POST" });
+      const { sessionId } = await initRes.json();
+
+      // Chunk Queue to ensure sequential uploads
+      let chunkQueue = Promise.resolve();
+      let uploadErrors = 0;
+
+      const videoStream = this.canvas.captureStream(this.settings.fps);
       const combinedStream = new MediaStream([videoStream.getVideoTracks()[0]]);
 
       if (this.settings.recordAudio) {
@@ -371,40 +379,84 @@ function appData() {
 
       this.recorder = new MediaRecorder(combinedStream, {
         mimeType: "video/webm;codecs=vp9,opus",
-        videoBitsPerSecond: 100000000, 
+        videoBitsPerSecond: 20000000, 
       });
 
-      const chunks = [];
-      this.recorder.ondataavailable = (e) => chunks.push(e.data);
+      this.recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunkQueue = chunkQueue.then(async () => {
+            const formData = new FormData();
+            formData.append("sessionId", sessionId);
+            formData.append("chunk", e.data);
+            try {
+              const res = await fetch("/upload-chunk", { method: "POST", body: formData });
+              if (!res.ok) throw new Error("Chunk failed");
+            } catch (err) {
+              uploadErrors++;
+              console.error("Upload error:", err);
+            }
+          });
+        }
+      };
+
       this.recorder.onstop = async () => {
         this.video.muted = wasMuted;
-        this.renderMsg = "Processing FFmpeg...";
-        const blob = new Blob(chunks, { type: "video/webm" });
-        const formData = new FormData();
-        formData.append("video", blob);
-        formData.append("fps", this.settings.fps);
+        this.renderMsg = "Waiting for uploads to finish...";
+        
+        // Wait for all chunks to be uploaded
+        await chunkQueue;
+        
+        if (uploadErrors > 0) {
+          alert(`Warning: ${uploadErrors} chunks failed to upload. Video might be corrupted.`);
+        }
 
+        this.renderMsg = "Starting backend processing...";
+        
         try {
-          const response = await fetch("/upload-and-process", { method: "POST", body: formData });
-          if (!response.ok) throw new Error("Failed");
-          const resultBlob = await response.blob();
-          const url = URL.createObjectURL(resultBlob);
-          const a = document.createElement("a");
-          a.href = url; a.download = "ascii_final.mp4"; a.click();
+          const res = await fetch("/upload-finish", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, fps: this.settings.fps })
+          });
+          
+          if (!res.ok) throw new Error("Processing trigger failed");
+          const { jobId } = await res.json();
+
+          // Poll for status
+          const pollStatus = async () => {
+            const sRes = await fetch(`/job-status/${jobId}`);
+            const job = await sRes.json();
+
+            if (job.status === "completed") {
+              this.renderMsg = "Done!";
+              const a = document.createElement("a");
+              a.href = job.downloadUrl;
+              a.download = "ascii_final.mp4";
+              a.click();
+              this.isExporting = false;
+            } else if (job.status === "error") {
+              alert("FFmpeg Error: " + job.error);
+              this.isExporting = false;
+            } else {
+              this.renderMsg = `Processing: ${job.progress}% (Backend)`;
+              setTimeout(pollStatus, 1000);
+            }
+          };
+
+          pollStatus();
         } catch (err) {
           alert("Error: " + err.message);
-        } finally {
           this.isExporting = false;
         }
       };
 
-      this.recorder.start();
-      video.play();
+      this.recorder.start(2000); 
+      this.video.play();
 
       if (!this.isCamera) {
           const interval = setInterval(() => {
-            this.renderProgress = Math.round((this.video.currentTime / this.video.duration) * 100);
-            this.renderMsg = `Capturing: ${this.renderProgress}%`;
+            const prog = Math.round((this.video.currentTime / this.video.duration) * 100);
+            this.renderMsg = `Recording: ${prog}%`;
             this.drawFrame(this.video.currentTime);
             if (this.video.ended) {
               clearInterval(interval);
