@@ -29,7 +29,45 @@ uniform vec3 u_bgColor;
 
 uniform float u_spacing;
 uniform int u_effectStyle;
+uniform int u_asciiVariation;
+uniform bool u_showOriginal;
+
+uniform float u_edgeStrength;
+uniform float u_edgeThreshold;
+uniform float u_dirEdgeThreshold;
+
+uniform float u_audioData[64];
+uniform bool u_showVisualizer;
+uniform float u_visualizerIntensity;
+uniform float u_stability;
+
 uniform float u_time;
+
+// Sobel Edge Detection
+vec2 getGradient(sampler2D tex, vec2 uv) {
+  vec2 res = 1.0 / u_resolution;
+  float h = 0.0;
+  float v = 0.0;
+  
+  // Sobel kernels
+  // Horizontal
+  h += texture2D(tex, uv + vec2(-res.x, -res.y)).r * -1.0;
+  h += texture2D(tex, uv + vec2(-res.x,  0.0)).r * -2.0;
+  h += texture2D(tex, uv + vec2(-res.x,  res.y)).r * -1.0;
+  h += texture2D(tex, uv + vec2( res.x, -res.y)).r *  1.0;
+  h += texture2D(tex, uv + vec2( res.x,  0.0)).r *  2.0;
+  h += texture2D(tex, uv + vec2( res.x,  res.y)).r *  1.0;
+  
+  // Vertical
+  v += texture2D(tex, uv + vec2(-res.x, -res.y)).r * -1.0;
+  v += texture2D(tex, uv + vec2( 0.0,   -res.y)).r * -2.0;
+  v += texture2D(tex, uv + vec2( res.x,  -res.y)).r * -1.0;
+  v += texture2D(tex, uv + vec2(-res.x,  res.y)).r *  1.0;
+  v += texture2D(tex, uv + vec2( 0.0,    res.y)).r *  2.0;
+  v += texture2D(tex, uv + vec2( res.x,  res.y)).r *  1.0;
+  
+  return vec2(h, v);
+}
 
 // Detailed Post-Processing Uniforms
 uniform bool u_bloom;
@@ -101,77 +139,143 @@ void main() {
   vec2 cell = floor(pixel / u_charSize);
   vec2 center = (cell * u_charSize + u_charSize * 0.5) / u_resolution;
 
-  // Chromatic Aberration
+  // Determine sampling position
+  vec2 sampleUV = u_showOriginal ? uv : center;
+
+  // 1. Get raw color and initial luminance
   vec3 color;
   if (u_chromatic) {
-    color.r = getSharpenedColor(u_video, center + vec2(u_chromaticOffset, 0.0)).r;
-    color.g = getSharpenedColor(u_video, center).g;
-    color.b = getSharpenedColor(u_video, center - vec2(u_chromaticOffset, 0.0)).b;
+    color.r = getSharpenedColor(u_video, sampleUV + vec2(u_chromaticOffset, 0.0)).r;
+    color.g = getSharpenedColor(u_video, sampleUV).g;
+    color.b = getSharpenedColor(u_video, sampleUV - vec2(u_chromaticOffset, 0.0)).b;
   } else {
-    color = getSharpenedColor(u_video, center);
+    color = getSharpenedColor(u_video, sampleUV);
   }
+  
+  float rawLuminance = dot(color, vec3(0.299, 0.587, 0.114));
 
-  // Color Adjustments
+  // 2. Apply Saturation first using raw luminance
+  color = mix(vec3(rawLuminance), color, u_saturation);
+
+  // 3. Apply other color adjustments to the saturated color
   color = (color - 0.5) * u_contrast + 0.5 + (u_brightness - 1.0);
   color = clamp(color, 0.0, 1.0);
   color = pow(color, vec3(1.0 / u_gamma));
-  float luminance = dot(color, vec3(0.299, 0.587, 0.114));
-  color = mix(vec3(luminance), color, u_saturation);
 
-  float gray = luminance;
-  if (u_invert) gray = 1.0 - gray;
+  // 4. Calculate final luminance for character mapping
+  float finalLuminance = dot(color, vec3(0.299, 0.587, 0.114));
 
-  // ASCII mapping
-  vec2 local = mod(pixel, u_charSize) / u_charSize;
-  local = (local - 0.5) * u_spacing + 0.5;
-
-  float glyph = 0.0;
-  bool insideChar = (local.x >= 0.0 && local.x <= 1.0 && local.y >= 0.0 && local.y <= 1.0);
-
-  if (insideChar) {
-    if (u_effectStyle == 0) {
-      float index = floor(gray * (u_charCount - 1.0));
-      glyph = texture2D(u_atlas, vec2((index + local.x) / u_charCount, local.y)).r;
-      glyph = smoothstep(0.2, 0.8, glyph);
-    } 
-    else if (u_effectStyle == 1) {
-      glyph = 1.0 - smoothstep(gray * 0.5 - 0.05, gray * 0.5 + 0.05, distance(local, vec2(0.5)));
-    } 
-    else if (u_effectStyle == 2) {
-      float rand = random(cell);
-      float fall = fract(cell.y * 0.05 + u_time * (0.5 + rand * 1.5) + rand);
-      float matrixIndex = floor(random(cell + floor(u_time * 10.0)) * u_charCount);
-      glyph = texture2D(u_atlas, vec2((matrixIndex + local.x) / u_charCount, local.y)).r;
-      glyph = smoothstep(0.2, 0.8, glyph) * (smoothstep(0.7, 1.0, fall) * 0.8 + 0.2) * gray;
-    }
+  // 5. Apply Temporal Stability (Snapping) ONLY to the mapping luminance
+  float charLuminance = finalLuminance;
+  if (u_stability > 0.0) {
+      float levels = mix(256.0, 8.0, u_stability);
+      charLuminance = floor(charLuminance * levels + 0.5) / levels;
   }
 
   vec3 finalColor;
-  if (u_colorMode) {
-    finalColor = mix(u_bgColor, color, glyph);
+  float glyphGlow = 1.0;
+
+  if (u_showOriginal) {
+    finalColor = color;
+    glyphGlow = finalLuminance;
   } else {
-    if (u_effectStyle == 2) {
-      finalColor = mix(u_bgColor, vec3(0.0, glyph, glyph * 0.2), 1.0);
-    } else {
-      finalColor = mix(u_bgColor, vec3(1.0), glyph);
+    float gray = charLuminance;
+    if (u_invert) gray = 1.0 - gray;
+
+    // ASCII mapping
+    vec2 local = mod(pixel, u_charSize) / u_charSize;
+    local = (local - 0.5) * u_spacing + 0.5;
+
+    float glyph = 0.0;
+    bool insideChar = (local.x >= 0.0 && local.x <= 1.0 && local.y >= 0.0 && local.y <= 1.0);
+
+    // Audio Visualizer Logic
+    bool isViz = false;
+    if (u_showVisualizer) {
+        float vizHeight = 0.2; // 20% of screen
+        if (v_uv.y < vizHeight) {
+            int bin = int(v_uv.x * 63.0);
+            float val = 0.0;
+            // Manual unroll or loop for GLSL ES 1.0 compatibility
+            for(int i=0; i<64; i++) { if(i == bin) val = u_audioData[i]; }
+            
+            float threshold = (v_uv.y / vizHeight);
+            if (val * u_visualizerIntensity > threshold) {
+                isViz = true;
+                // Use bars for visualizer
+                float vIndex = floor(threshold * 5.0 + val * 5.0);
+                glyph = texture2D(u_atlas, vec2((vIndex + local.x) / u_charCount, local.y)).r;
+            }
+        }
     }
+
+    if (insideChar && !isViz) {
+      if (u_effectStyle == 0) { // ASCII Art Base
+        if (u_asciiVariation == 0) { // Standard
+          float index = floor(gray * (u_charCount - 1.0));
+          glyph = texture2D(u_atlas, vec2((index + local.x) / u_charCount, local.y)).r;
+        }
+        else if (u_asciiVariation == 1) { // Edge-Enhanced
+          vec2 grad = getGradient(u_video, center);
+          float edge = length(grad);
+          edge = smoothstep(u_edgeThreshold, u_edgeThreshold + 0.1, edge) * u_edgeStrength;
+          float index = floor(clamp(gray + edge, 0.0, 1.0) * (u_charCount - 1.0));
+          glyph = texture2D(u_atlas, vec2((index + local.x) / u_charCount, local.y)).r;
+        }
+        else if (u_asciiVariation == 2) { // Directional
+          vec2 grad = getGradient(u_video, center);
+          float edge = length(grad);
+          if (edge > u_dirEdgeThreshold) {
+            float angle = atan(grad.y, grad.x) / 3.14159; 
+            float dirIndex = floor(((angle + 1.0) * 0.5) * u_charCount);
+            glyph = texture2D(u_atlas, vec2((dirIndex + local.x) / u_charCount, local.y)).r;
+          } else {
+            float index = floor(gray * (u_charCount - 1.0));
+            glyph = texture2D(u_atlas, vec2((index + local.x) / u_charCount, local.y)).r;
+          }
+        }
+        else if (u_asciiVariation == 3) { // Sharp Detailed
+          vec3 d = getSharpenedColor(u_video, center);
+          float dGray = dot(d, vec3(0.299, 0.587, 0.114));
+          float index = floor(dGray * (u_charCount - 1.0));
+          glyph = texture2D(u_atlas, vec2((index + local.x) / u_charCount, local.y)).r;
+        }
+        glyph = smoothstep(0.15, 0.85, glyph);
+      } 
+      else if (u_effectStyle == 1) { // Halftone Dots
+        glyph = 1.0 - smoothstep(gray * 0.5 - 0.05, gray * 0.5 + 0.05, distance(local, vec2(0.5)));
+      } 
+      else if (u_effectStyle == 2) { // Matrix Rain
+        float rand = random(cell);
+        float fall = fract(cell.y * 0.05 + u_time * (0.5 + rand * 1.5) + rand);
+        float matrixIndex = floor(random(cell + floor(u_time * 10.0)) * u_charCount);
+        glyph = texture2D(u_atlas, vec2((matrixIndex + local.x) / u_charCount, local.y)).r;
+        glyph = smoothstep(0.2, 0.8, glyph) * (smoothstep(0.7, 1.0, fall) * 0.8 + 0.2) * gray;
+      }
+    }
+
+    if (u_colorMode) {
+      finalColor = mix(u_bgColor, color, glyph);
+    } else {
+      if (u_effectStyle == 2) {
+        finalColor = mix(u_bgColor, vec3(0.0, glyph, glyph * 0.2), 1.0);
+      } else {
+        finalColor = mix(u_bgColor, vec3(1.0), glyph);
+      }
+    }
+    glyphGlow = glyph;
   }
 
   // Phosphor bleed
   if (u_phosphor) {
-      finalColor = mix(finalColor, finalColor * u_phosphorColor, 0.5) + u_phosphorColor * glyph * 0.2;
+      finalColor = mix(finalColor, finalColor * u_phosphorColor, 0.5) + u_phosphorColor * glyphGlow * 0.2;
   }
 
   // Bloom (multi-tap approximation)
   if (u_bloom) {
     vec3 bloom = vec3(0.0);
-    float total = 0.0;
-    vec2 bRes = u_bloomRadius / u_resolution;
-    
-    // Simple 5-tap blur
+    // Use raw color for bloom context
     bloom += max(vec3(0.0), finalColor - u_bloomThreshold);
-    bloom += max(vec3(0.0), mix(u_bgColor, color, glyph) - u_bloomThreshold); // Use raw color for bloom context
-    
     finalColor += bloom * u_bloomIntensity;
   }
 

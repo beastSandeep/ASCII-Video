@@ -12,6 +12,11 @@ function appData() {
       invert: false,
       bgColor: "#000000",
       style: 0,
+      asciiVariation: 0,
+      showOriginal: false,
+      edgeStrength: 1.0,
+      edgeThreshold: 0.1,
+      dirEdgeThreshold: 0.1,
       spacing: 1.0,
       
       // Detailed Post-Processing
@@ -44,9 +49,13 @@ function appData() {
       phosphorColor: "Green",
 
       fps: 30,
+      loop: false,
       recordAudio: true,
       volume: 1.0,
       muted: false,
+      stability: 0.5,
+      showVisualizer: false,
+      visualizerIntensity: 1.0,
     },
 
     // UI View (Not part of settings/export)
@@ -66,6 +75,15 @@ function appData() {
     startTime: performance.now(),
     isCamera: false,
     uniforms: {},
+    audio: {
+      ctx: null,
+      analyser: null,
+      previewGain: null,
+      recorderDest: null,
+      source: null,
+      dataArray: new Uint8Array(64),
+      floatData: new Float32Array(64)
+    },
 
     init() {
       this.video = document.getElementById("video");
@@ -85,7 +103,13 @@ function appData() {
         this.duration = this.video.duration;
       });
       this.video.addEventListener("ended", () => {
-        this.running = false;
+        if (this.settings.loop && !this.isCamera) {
+          this.video.currentTime = 0;
+          this.video.play();
+          this.running = true;
+        } else {
+          this.running = false;
+        }
       });
 
       // Mouse wheel zoom
@@ -112,6 +136,44 @@ function appData() {
         }
       });
       window.addEventListener('mouseup', () => this.isDragging = false);
+
+      // Global Key Listeners
+      window.addEventListener('keydown', (e) => {
+        const active = document.activeElement;
+        const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName);
+        
+        // If typing in a text/number field, allow default behavior
+        if (isInput && ['text', 'number', 'password', 'email', 'textarea'].includes(active.type || active.tagName.toLowerCase())) {
+          return;
+        }
+
+        const key = e.key.toLowerCase();
+
+        if (key === ' ' || e.code === 'Space') {
+          e.preventDefault();
+          this.togglePlay();
+        } 
+        else if (key === 'arrowleft') {
+          e.preventDefault();
+          this.stepFrame(-1);
+        } 
+        else if (key === 'arrowright') {
+          e.preventDefault();
+          this.stepFrame(1);
+        } 
+        else if (key === 'm') {
+          e.preventDefault();
+          this.toggleMute();
+        } 
+        else if (key === 'l') {
+          e.preventDefault();
+          this.toggleLoop();
+        } 
+        else if (key === 's') {
+          e.preventDefault();
+          this.takeSnapshot();
+        }
+      });
     },
 
     initUniforms() {
@@ -119,6 +181,9 @@ function appData() {
         "u_video", "u_atlas", "u_resolution", "u_charSize", "u_charCount",
         "u_brightness", "u_contrast", "u_saturation", "u_sharpness", "u_gamma",
         "u_colorMode", "u_invert", "u_bgColor", "u_spacing", "u_effectStyle",
+        "u_asciiVariation", "u_showOriginal", 
+        "u_edgeStrength", "u_edgeThreshold", "u_dirEdgeThreshold",
+        "u_audioData", "u_showVisualizer", "u_visualizerIntensity", "u_stability",
         "u_time", 
         "u_bloom", "u_bloomThreshold", "u_bloomSoft", "u_bloomIntensity", "u_bloomRadius",
         "u_grain", "u_grainIntensity", "u_grainSize", "u_grainSpeed",
@@ -157,7 +222,19 @@ function appData() {
 
       gl.uniform1f(u.u_spacing, parseFloat(s.spacing));
       gl.uniform1i(u.u_effectStyle, parseInt(s.style));
+      gl.uniform1i(u.u_asciiVariation, parseInt(s.asciiVariation));
+      gl.uniform1i(u.u_showOriginal, s.showOriginal ? 1 : 0);
+
+      gl.uniform1f(u.u_edgeStrength, parseFloat(s.edgeStrength));
+      gl.uniform1f(u.u_edgeThreshold, parseFloat(s.edgeThreshold));
+      gl.uniform1f(u.u_dirEdgeThreshold, parseFloat(s.dirEdgeThreshold));
       
+      // Audio & Stability
+      gl.uniform1fv(u.u_audioData, this.audio.floatData);
+      gl.uniform1i(u.u_showVisualizer, s.showVisualizer ? 1 : 0);
+      gl.uniform1f(u.u_visualizerIntensity, parseFloat(s.visualizerIntensity));
+      gl.uniform1f(u.u_stability, parseFloat(s.stability));
+
       const time = customTime !== undefined ? customTime : (performance.now() - this.startTime) / 1000.0;
       gl.uniform1f(u.u_time, time);
 
@@ -221,9 +298,45 @@ function appData() {
 
     renderLoop() {
       if (this.running || this.isExporting || this.settings.grain || this.settings.bloom) {
+        if (this.audio.analyser) {
+          this.audio.analyser.getByteFrequencyData(this.audio.dataArray);
+          for(let i=0; i<64; i++) {
+            this.audio.floatData[i] = this.audio.dataArray[i] / 255.0;
+          }
+        }
         this.drawFrame();
       }
       requestAnimationFrame(() => this.renderLoop());
+    },
+
+    initAudio() {
+      if (this.audio.ctx) return;
+      try {
+          this.audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
+          this.audio.analyser = this.audio.ctx.createAnalyser();
+          this.audio.analyser.fftSize = 128; // 64 bins
+          
+          this.audio.previewGain = this.audio.ctx.createGain();
+          this.audio.recorderDest = this.audio.ctx.createMediaStreamDestination();
+          
+          this.audio.source = this.audio.ctx.createMediaElementSource(this.video);
+          
+          // Source -> Analyser
+          this.audio.source.connect(this.audio.analyser);
+          
+          // Path A: Analyser -> Preview Gain -> Speakers (User hears this)
+          this.audio.analyser.connect(this.audio.previewGain);
+          this.audio.previewGain.connect(this.audio.ctx.destination);
+          
+          // Path B: Analyser -> Recorder Destination (Recorder captures this)
+          this.audio.analyser.connect(this.audio.recorderDest);
+          
+          // Keep video element at 1.0 volume internally
+          this.video.volume = 1.0;
+          this.updateVolume();
+      } catch(e) {
+          console.error("Audio init failed:", e);
+      }
     },
 
     formatTime(seconds) {
@@ -242,15 +355,31 @@ function appData() {
       if (!this.running) this.drawFrame();
     },
 
+    stepFrame(direction) {
+      if (this.running) this.togglePlay();
+      const frameTime = 1 / (this.settings.fps || 30);
+      this.video.currentTime = Math.max(0, Math.min(this.duration, this.video.currentTime + direction * frameTime));
+      this.drawFrame();
+    },
+
+    toggleLoop() {
+      this.settings.loop = !this.settings.loop;
+    },
+
     updateVolume() {
-      this.video.volume = this.settings.volume;
+      if (this.audio.previewGain) {
+          this.audio.previewGain.gain.setTargetAtTime(
+              this.settings.muted ? 0 : this.settings.volume,
+              this.audio.ctx.currentTime,
+              0.01
+          );
+      }
       if (this.settings.volume > 0) this.settings.muted = false;
-      this.video.muted = this.settings.muted;
     },
 
     toggleMute() {
       this.settings.muted = !this.settings.muted;
-      this.video.muted = this.settings.muted;
+      this.updateVolume();
     },
 
     togglePlay() {
@@ -274,6 +403,7 @@ function appData() {
       this.hasSource = true;
       this.video.src = URL.createObjectURL(file);
       this.video.onloadeddata = () => {
+        this.initAudio();
         this.canvas.width = this.video.videoWidth;
         this.canvas.height = this.video.videoHeight;
         this.estimateFPS();
@@ -288,6 +418,7 @@ function appData() {
         this.video.src = "";
         this.video.srcObject = stream;
         this.video.onloadedmetadata = () => {
+          this.initAudio();
           this.canvas.width = this.video.videoWidth;
           this.canvas.height = this.video.videoHeight;
           this.settings.fps = 30;
@@ -346,10 +477,20 @@ function appData() {
       if (!file) return;
       const reader = new FileReader();
       reader.onload = (e) => {
-        Object.assign(this.settings, JSON.parse(e.target.result));
-        this.updateCharset();
-        this.drawFrame();
-        this.updateVolume();
+        try {
+          const loaded = JSON.parse(e.target.result);
+          // Merge into settings to maintain reactivity
+          Object.assign(this.settings, loaded);
+          
+          this.updateCharset();
+          this.updateVolume();
+          this.drawFrame();
+          
+          // Clear input so same file can be loaded again
+          e.target.value = "";
+        } catch (err) {
+          alert("Failed to load preset: Invalid JSON file.");
+        }
       };
       reader.readAsText(file);
     },
@@ -395,19 +536,15 @@ function appData() {
       const combinedStream = new MediaStream([videoStream.getVideoTracks()[0]]);
 
       if (this.settings.recordAudio) {
-          let audioTracks = [];
+          let audioTrack = null;
           if (this.isCamera && this.video.srcObject) {
-              audioTracks = this.video.srcObject.getAudioTracks();
-          } else if (this.video.captureStream) {
-              const fileStream = this.video.captureStream();
-              audioTracks = fileStream.getAudioTracks();
-          } else if (this.video.mozCaptureStream) {
-              const fileStream = this.video.mozCaptureStream();
-              audioTracks = fileStream.getAudioTracks();
+              audioTrack = this.video.srcObject.getAudioTracks()[0];
+          } else if (this.audio.recorderDest) {
+              audioTrack = this.audio.recorderDest.stream.getAudioTracks()[0];
           }
 
-          if (audioTracks.length > 0) {
-              combinedStream.addTrack(audioTracks[0]);
+          if (audioTrack) {
+              combinedStream.addTrack(audioTrack);
           }
       }
 

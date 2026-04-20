@@ -26,13 +26,21 @@
 
         <!-- Video Controls Overlay -->
         <div id="video-controls" x-show="!isCamera && hasSource" x-transition>
-          <button @click="togglePlay" class="control-btn">
+          <button @click="stepFrame(-1)" class="control-btn" title="Frame Back">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M15.41,16.58L10.83,12L15.41,7.41L14,6L8,12L14,18L15.41,16.58Z" /></svg>
+          </button>
+
+          <button @click="togglePlay" class="control-btn" :title="running ? 'Pause' : 'Play'">
             <template x-if="!running">
               <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8,5.14V19.14L19,12.14L8,5.14Z" /></svg>
             </template>
             <template x-if="running">
               <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M14,19H18V5H14M6,19H10V5H6V19Z" /></svg>
             </template>
+          </button>
+
+          <button @click="stepFrame(1)" class="control-btn" title="Frame Forward">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z" /></svg>
           </button>
 
           <div class="progress-container">
@@ -48,6 +56,10 @@
           <div class="time-display">
             <span x-text="formatTime(currentTime)"></span> / <span x-text="formatTime(duration)"></span>
           </div>
+
+          <button @click="toggleLoop" class="control-btn" :style="settings.loop ? 'color: #3498db' : ''" title="Toggle Loop">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M17,17H7V14L3,18L7,22V19H19V13H17M7,7H17V10L21,6L17,2V5H5V11H7V7Z" /></svg>
+          </button>
 
           <button @click="toggleMute" class="control-btn">
             <template x-if="settings.muted || settings.volume == 0">
@@ -88,6 +100,10 @@
               <button @click="useWebcam">Use Webcam</button>
             </div>
           </div>
+          <div class="control-group inline">
+            <label>Show Original Video</label>
+            <input type="checkbox" x-model="settings.showOriginal" />
+          </div>
           <div class="control-group">
             <label>Preview Volume: <span x-text="Math.round(settings.volume * 100)"></span>%</label>
             <div class="button-row">
@@ -108,6 +124,38 @@
             </select>
           </div>
           <div class="control-group" x-show="settings.style == 0">
+            <label>Algorithm Variation</label>
+            <select x-model="settings.asciiVariation">
+              <option value="0">Standard (Luminance)</option>
+              <option value="1">Edge-Enhanced (Sobel)</option>
+              <option value="2">Directional Mapping</option>
+              <option value="3">Sharp Detailed</option>
+            </select>
+            
+            <!-- Variation Tweaks -->
+            <div x-show="settings.asciiVariation == 1" class="sub-settings">
+              <div class="control-group">
+                <label>Edge Strength: <span x-text="settings.edgeStrength"></span></label>
+                <input type="range" x-model="settings.edgeStrength" min="0" max="5" step="0.1" />
+              </div>
+              <div class="control-group">
+                <label>Edge Threshold: <span x-text="settings.edgeThreshold"></span></label>
+                <input type="range" x-model="settings.edgeThreshold" min="0" max="1" step="0.01" />
+              </div>
+            </div>
+            
+            <div x-show="settings.asciiVariation == 2" class="sub-settings">
+              <div class="control-group">
+                <label>Directional Threshold: <span x-text="settings.dirEdgeThreshold"></span></label>
+                <input type="range" x-model="settings.dirEdgeThreshold" min="0" max="1" step="0.01" />
+              </div>
+            </div>
+            
+            <div x-show="settings.asciiVariation == 3" class="sub-settings">
+              <p style="font-size: 0.75rem; color: #888;">(Uses 'Sharpness' slider in Adjustments)</p>
+            </div>
+          </div>
+          <div class="control-group" x-show="settings.style == 0">
             <label>Character Set</label>
             <select x-model="settings.charset" @change="updateCharset">
               <option value="STANDARD">Standard</option>
@@ -116,6 +164,11 @@
               <option value="BINARY">Binary</option>
               <option value="NUMERIC">Numeric</option>
               <option value="SIMPLE">Simple</option>
+              <option value="EXTENDED">Extended (High Detail)</option>
+              <option value="KATAKANA">Katakana (Japanese)</option>
+              <option value="BRAILLE">Braille (Spatial Detail)</option>
+              <option value="GEOMETRIC">Geometric Shapes</option>
+              <option value="ASCII_SHARP">ASCII Sharp (Balanced)</option>
             </select>
           </div>
           <div class="control-group">
@@ -158,6 +211,10 @@
           <div class="control-group">
             <label>Gamma: <span x-text="settings.gamma"></span></label>
             <input type="range" x-model="settings.gamma" min="0.1" max="3.0" step="0.05" />
+          </div>
+          <div class="control-group">
+            <label>Temporal Stability: <span x-text="settings.stability"></span></label>
+            <input type="range" x-model="settings.stability" min="0" max="1" step="0.01" />
           </div>
           <div class="control-group inline">
             <label>Invert Effect</label>
@@ -293,6 +350,18 @@
                 <option value="Blue">Blue</option>
                 <option value="White">White</option>
               </select>
+            </div>
+          </div>
+
+          <!-- Audio Visualizer -->
+          <div class="control-group inline">
+            <label>Audio Visualizer</label>
+            <input type="checkbox" x-model="settings.showVisualizer" />
+          </div>
+          <div x-show="settings.showVisualizer" class="sub-settings">
+            <div class="control-group">
+              <label>Intensity: <span x-text="settings.visualizerIntensity"></span></label>
+              <input type="range" x-model="settings.visualizerIntensity" min="0.1" max="5" step="0.1" />
             </div>
           </div>
         </details>

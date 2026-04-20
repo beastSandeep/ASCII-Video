@@ -4,7 +4,12 @@ const CHARSETS = {
   BLOCKS: "█▓▒░ ",
   BINARY: "01 ",
   NUMERIC: "0123456789 ",
-  SIMPLE: "#+-:. "
+  SIMPLE: "#+-:. ",
+  EXTENDED: "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\\\|()1{}[]?-_+~<>i!lI;:,\\\"^`'. ",
+  KATAKANA: "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン ",
+  BRAILLE: "⠀⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟⠠⠡⠢⠣⠤⠥⠦⠧⠨⠩⠪⠫⠬⠭⠮⠯⠰⠱⠲⠳⠴⠵⠶⠷⠸⠹⠺⠻⠼⠽⠾⠿",
+  GEOMETRIC: "■□▲△▼▽◀◁▶▷◆◇○◎●◐◑◒◓◔◕ ",
+  ASCII_SHARP: " .'`^\\\",:;Il!i><~+_-?][}{1)(|\\\\/tfjrxnuvczmwqpdbkhao*#MW&8%B@$"
 };
 
 function createAtlas(charsetName = "STANDARD") {
