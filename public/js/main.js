@@ -57,7 +57,10 @@ function appData() {
 
     running: false,
     isExporting: false,
+    hasSource: false,
     renderProgress: 0,
+    currentTime: 0,
+    duration: 0,
     renderMsg: "Ready",
     snapshotFormat: "image/png",
     startTime: performance.now(),
@@ -70,6 +73,20 @@ function appData() {
       initGL(this.canvas);
       this.initUniforms();
       this.renderLoop();
+
+      // Video event listeners for UI sync
+      this.video.addEventListener("timeupdate", () => {
+        this.currentTime = this.video.currentTime;
+      });
+      this.video.addEventListener("durationchange", () => {
+        this.duration = this.video.duration;
+      });
+      this.video.addEventListener("loadedmetadata", () => {
+        this.duration = this.video.duration;
+      });
+      this.video.addEventListener("ended", () => {
+        this.running = false;
+      });
 
       // Mouse wheel zoom
       this.canvas.addEventListener('wheel', (e) => {
@@ -209,6 +226,22 @@ function appData() {
       requestAnimationFrame(() => this.renderLoop());
     },
 
+    formatTime(seconds) {
+      if (!seconds || isNaN(seconds)) return "0:00";
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      if (h > 0) {
+        return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+      }
+      return `${m}:${s.toString().padStart(2, "0")}`;
+    },
+
+    seek(time) {
+      this.video.currentTime = time;
+      if (!this.running) this.drawFrame();
+    },
+
     updateVolume() {
       this.video.volume = this.settings.volume;
       if (this.settings.volume > 0) this.settings.muted = false;
@@ -238,6 +271,7 @@ function appData() {
         this.video.srcObject = null;
       }
       this.isCamera = false;
+      this.hasSource = true;
       this.video.src = URL.createObjectURL(file);
       this.video.onloadeddata = () => {
         this.canvas.width = this.video.videoWidth;
