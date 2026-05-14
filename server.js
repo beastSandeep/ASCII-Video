@@ -11,106 +11,136 @@ const upload = multer({ storage: storage });
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
 
-const activeUploads = new Map();
 const jobs = new Map();
 
-// Initialize an upload session
-app.post("/upload-init", (req, res) => {
-  const sessionId = `upload_${Date.now()}`;
-  const tempPath = path.join("uploads", `${sessionId}.webm`);
-  activeUploads.set(sessionId, { path: tempPath, startTime: Date.now() });
-  res.json({ sessionId });
-});
-
-// Receive a chunk and append it to the file
-app.post("/upload-chunk", upload.single("chunk"), (req, res) => {
-  const { sessionId } = req.body;
-  const session = activeUploads.get(sessionId);
-
-  if (!session) return res.status(400).send("Invalid session ID");
-
-  try {
-    fs.appendFileSync(session.path, req.file.buffer);
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("Error appending chunk:", err);
-    res.status(500).send("Error saving chunk");
-  }
-});
-
-// Finalize and start background processing
-app.post("/upload-finish", (req, res) => {
-  const { sessionId, fps } = req.body;
-  const session = activeUploads.get(sessionId);
-
-  if (!session || !fs.existsSync(session.path)) {
-    return res.status(400).send("File not found");
-  }
-
-  const tempPath = session.path;
-  const jobId = `job_${Date.now()}`;
-  const outputName = `processed_${Date.now()}.mp4`;
-  const outputPath = path.join("uploads", outputName);
+// Process a single segment
+app.post("/process-segment", multer({ storage: multer.diskStorage({
+  destination: "uploads/",
+  filename: (req, file, cb) => cb(null, `seg_${Date.now()}_${Math.random().toString(36).slice(2)}.webm`)
+})}).single("segment"), (req, res) => {
+  const { fps, width, height } = req.body;
+  const inputPath = req.file.path;
+  const segmentId = `seg_${Date.now()}`;
+  const outputPath = inputPath.replace(".webm", ".mp4");
   const targetFps = parseFloat(fps) || 30;
+  const w = parseInt(width);
+  const h = parseInt(height);
 
-  jobs.set(jobId, { 
-    status: "processing", 
-    progress: 0, 
-    downloadUrl: null, 
-    error: null,
-    timestamp: Date.now() 
-  });
-  
-  // Return jobId immediately to avoid timeout
-  res.json({ jobId });
+  jobs.set(segmentId, { status: "processing", progress: 0, timestamp: Date.now() });
 
-  console.log(`[${jobId}] Starting processing: ${tempPath}`);
+  const runSegmentFfmpeg = (useGpu = true) => {
+    const command = ffmpeg(inputPath);
+    
+    // Scale and Pad to maintain aspect ratio exactly
+    if (!isNaN(w) && !isNaN(h)) {
+      command.videoFilters([
+        {
+          filter: 'scale',
+          options: {
+            w: w,
+            h: h,
+            force_original_aspect_ratio: 'decrease'
+          }
+        },
+        {
+          filter: 'pad',
+          options: {
+            w: w,
+            h: h,
+            x: '(ow-iw)/2',
+            y: '(oh-ih)/2',
+            color: 'black'
+          }
+        }
+      ]);
+    }
 
-  const runFfmpeg = (useGpu = true) => {
-    const command = ffmpeg(tempPath);
     const options = useGpu ? [
       "-c:v h264_nvenc", "-preset slow", "-cq 18",
       `-r ${targetFps}`, "-pix_fmt yuv420p",
       "-c:a aac", "-b:a 192k", "-movflags +faststart"
     ] : [
-      "-c:v libx264", "-preset fast", "-crf 22",
+      "-c:v libx264", "-preset fast", "-crf 18",
       `-r ${targetFps}`, "-pix_fmt yuv420p",
       "-c:a aac", "-b:a 192k", "-movflags +faststart"
     ];
 
     command.outputOptions(options)
-      .on("progress", (progress) => {
-        if (progress.percent) {
-          const job = jobs.get(jobId);
-          if (job) job.progress = Math.round(progress.percent);
-        }
+      .on("progress", (p) => {
+        const job = jobs.get(segmentId);
+        if (job) job.progress = Math.round(p.percent || 0);
       })
       .on("error", (err) => {
         if (useGpu) {
-          console.warn(`[${jobId}] GPU failed, retrying with CPU...`);
-          runFfmpeg(false);
+          console.warn(`[Segment ${segmentId}] GPU failed, retrying with CPU...`);
+          runSegmentFfmpeg(false);
         } else {
-          console.error(`[${jobId}] FFmpeg error:`, err);
-          const job = jobs.get(jobId);
-          if (job) { job.status = "error"; job.error = err.message; }
-          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+          console.error(`[Segment ${segmentId}] error:`, err);
+          const job = jobs.get(segmentId);
+          if (job) job.status = "error";
+          fs.unlink(inputPath, () => {});
         }
       })
       .on("end", () => {
-        console.log(`[${jobId}] Finished: ${outputPath}`);
-        const job = jobs.get(jobId);
+        const job = jobs.get(segmentId);
         if (job) {
           job.status = "completed";
-          job.progress = 100;
-          job.downloadUrl = `/download/${outputName}`;
+          job.path = outputPath;
         }
-        activeUploads.delete(sessionId);
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        fs.unlink(inputPath, () => {});
       })
       .save(outputPath);
   };
 
-  runFfmpeg(true);
+  runSegmentFfmpeg(true);
+  res.json({ segmentId });
+});
+
+// Stitch all segments together
+app.post("/stitch-segments", (req, res) => {
+  const { segmentIds } = req.body;
+  const jobId = `stitch_${Date.now()}`;
+  const outputName = `final_${Date.now()}.mp4`;
+  const outputPath = path.join("uploads", outputName);
+
+  const readySegments = segmentIds.map(id => jobs.get(id)).filter(j => j && j.status === "completed");
+  
+  if (readySegments.length === 0) {
+    return res.status(400).send("No valid segments found");
+  }
+
+  // Create concat file
+  const concatPath = path.join("uploads", `concat_${Date.now()}.txt`);
+  const content = readySegments.map(s => `file '${path.basename(s.path)}'`).join("\n");
+  fs.writeFileSync(concatPath, content);
+
+  jobs.set(jobId, { status: "processing", progress: 0, timestamp: Date.now() });
+
+  ffmpeg()
+    .input(concatPath)
+    .inputOptions(["-f concat", "-safe 0"])
+    .outputOptions("-c copy")
+    .on("error", (err) => {
+      console.error("Stitch error:", err);
+      const job = jobs.get(jobId);
+      if (job) job.status = "error";
+      if (fs.existsSync(concatPath)) fs.unlink(concatPath, () => {});
+    })
+    .on("end", () => {
+      const job = jobs.get(jobId);
+      if (job) {
+        job.status = "completed";
+        job.downloadUrl = `/download/${outputName}`;
+      }
+      if (fs.existsSync(concatPath)) fs.unlink(concatPath, () => {});
+      // Optional: cleanup segments after stitching
+      readySegments.forEach(s => {
+        if (fs.existsSync(s.path)) fs.unlink(s.path, () => {});
+      });
+    })
+    .save(outputPath);
+
+  res.json({ jobId });
 });
 
 // Poll for job status
@@ -147,18 +177,7 @@ setInterval(() => {
     }
   }
 
-  // 2. Clean up activeUploads Map
-  for (const [sessionId, session] of activeUploads.entries()) {
-    if (now - session.startTime > ONE_HOUR) {
-      // If file exists, try to delete it
-      if (fs.existsSync(session.path)) {
-        try { fs.unlinkSync(session.path); } catch (e) {}
-      }
-      activeUploads.delete(sessionId);
-    }
-  }
-
-  // 3. Clean up physical files in uploads/ that might be orphaned
+  // 2. Clean up physical files in uploads/ that might be orphaned
   fs.readdir("uploads", (err, files) => {
     if (err) return;
     files.forEach(file => {

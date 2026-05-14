@@ -18,14 +18,32 @@
   </head>
   <body x-data="appData()" x-init="init()">
     <div id="app">
-      <div id="preview-container">
+      <div id="preview-container" 
+           @wheel.prevent="handleWheel($event)"
+           @mousedown="startPan($event)"
+           @mousemove="handlePan($event)"
+           @mouseup="endPan()"
+           @mouseleave="endPan()">
         <video id="video" playsinline style="display: none;"></video>
         <canvas id="gl" 
                 :style="`transform: translate(${uiPan.x}px, ${uiPan.y}px) scale(${uiScale}); cursor: ${isDragging ? 'grabbing' : 'grab'}`"
         ></canvas>
 
+        <!-- Zoom Controls -->
+        <div id="zoom-controls">
+          <button @click="uiScale = Math.min(uiScale + 0.1, 10); drawFrame()" title="Zoom In">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z" /></svg>
+          </button>
+          <button @click="uiScale = Math.max(0.1, uiScale - 0.1); drawFrame()" title="Zoom Out">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19,13H5V11H19V13Z" /></svg>
+          </button>
+          <button @click="uiScale = 1.0; uiPan = {x:0, y:0}; drawFrame()" title="Reset View">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6A6,6 0 0,1 18,12H16A4,4 0 0,0 12,8A4,4 0 0,0 8,12A4,4 0 0,0 12,16A4,4 0 0,0 16,12H18A6,6 0 0,1 12,18M20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20V18A6,6 0 0,1 6,12A6,6 0 0,1 12,6A6,6 0 0,1 18,12H20Z" /></svg>
+          </button>
+        </div>
+
         <!-- Video Controls Overlay -->
-        <div id="video-controls" x-show="!isCamera && hasSource" x-transition>
+        <div id="video-controls" x-show="!isCamera && hasSource" x-transition @mousedown.stop>
           <button @click="stepFrame(-1)" class="control-btn" title="Frame Back">
             <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M15.41,16.58L10.83,12L15.41,7.41L14,6L8,12L14,18L15.41,16.58Z" /></svg>
           </button>
@@ -43,7 +61,7 @@
             <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z" /></svg>
           </button>
 
-          <div class="progress-container">
+          <div class="progress-container" style="position: relative;">
             <input type="range" 
                    min="0" 
                    :max="duration || 0" 
@@ -51,6 +69,17 @@
                    :value="currentTime" 
                    @input="seek($event.target.value)"
                    class="progress-bar" />
+            
+            <!-- Range Pointers -->
+            <div class="range-pointer start" 
+                 :style="`left: ${(settings.exportStart / duration) * 100}%`"
+                 x-show="hasSource && !isCamera"></div>
+            <div class="range-pointer end" 
+                 :style="`left: ${(settings.exportEnd / duration) * 100}%`"
+                 x-show="hasSource && !isCamera"></div>
+            <div class="range-highlight"
+                 :style="`left: ${(settings.exportStart / duration) * 100}%; width: ${((settings.exportEnd - settings.exportStart) / duration) * 100}%`"
+                 x-show="hasSource && !isCamera"></div>
           </div>
 
           <div class="time-display">
@@ -109,6 +138,16 @@
             <div class="button-row">
               <button @click="toggleMute" x-text="settings.muted ? 'Unmute' : 'Mute'" style="flex: 0 0 80px;"></button>
               <input type="range" x-model="settings.volume" @input="updateVolume" min="0" max="1" step="0.01" style="flex: 1;" />
+            </div>
+          </div>
+          <div class="control-group">
+            <label>Keyboard Shortcuts</label>
+            <div style="font-size: 0.7rem; color: #aaa; background: #222; padding: 8px; border-radius: 4px;">
+              <div style="display: flex; justify-content: space-between;"><span>Space</span> <span>Play/Pause</span></div>
+              <div style="display: flex; justify-content: space-between;"><span>Arrows</span> <span>Seek Frame</span></div>
+              <div style="display: flex; justify-content: space-between;"><span>M</span> <span>Mute</span></div>
+              <div style="display: flex; justify-content: space-between;"><span>L</span> <span>Loop</span></div>
+              <div style="display: flex; justify-content: space-between;"><span>S</span> <span>Snapshot</span></div>
             </div>
           </div>
         </details>
@@ -383,6 +422,54 @@
             <input type="checkbox" x-model="settings.recordAudio" />
           </div>
           <hr />
+          <div class="control-group">
+            <label>Export Range (Seconds)</label>
+            <div class="button-row" style="margin-bottom: 8px;">
+              <div style="flex: 1;">
+                <span style="font-size: 0.7rem; color: #888;">Start</span>
+                <input type="number" x-model.number="settings.exportStart" step="0.1" min="0" :max="settings.exportEnd" />
+              </div>
+              <div style="flex: 1;">
+                <span style="font-size: 0.7rem; color: #888;">End</span>
+                <input type="number" x-model.number="settings.exportEnd" step="0.1" :min="settings.exportStart" :max="duration" />
+              </div>
+            </div>
+            <div class="button-row">
+              <button @click="settings.exportStart = Math.floor(currentTime*100)/100" style="font-size: 0.7rem;">Set Start</button>
+              <button @click="settings.exportEnd = Math.floor(currentTime*100)/100" style="font-size: 0.7rem;">Set End</button>
+              <button @click="settings.exportStart = 0; settings.exportEnd = Math.floor(duration*100)/100" style="font-size: 0.7rem;">Reset</button>
+            </div>
+          </div>
+          <div class="control-group">
+            <label>Export Method</label>
+            <select x-model="settings.exportMethod">
+              <option value="deterministic">Deterministic (Best Quality)</option>
+              <option value="realtime">Real-time (Faster)</option>
+            </select>
+            <p style="font-size: 0.7rem; color: #888; margin-top: 4px;">Deterministic captures every single frame. Real-time records the screen at your current speed.</p>
+          </div>
+          <div class="control-group">
+            <label>Chunk Size (Seconds)</label>
+            <input type="number" x-model.number="settings.exportChunkSize" step="1" min="0" :max="duration" />
+            <p style="font-size: 0.7rem; color: #888; margin-top: 4px;">5s recommended for 4K. 0 means one single large chunk.</p>
+          </div>
+          <div class="control-group">
+            <label>Output Resolution</label>
+            <div class="button-row" style="margin-bottom: 8px;">
+              <div style="flex: 1;">
+                <span style="font-size: 0.7rem; color: #888;">Width</span>
+                <input type="number" x-model.number="settings.exportWidth" step="2" min="16" :max="originalWidth" />
+              </div>
+              <div style="flex: 1;">
+                <span style="font-size: 0.7rem; color: #888;">Height</span>
+                <input type="number" x-model.number="settings.exportHeight" step="2" min="16" :max="originalHeight" />
+              </div>
+            </div>
+            <div class="button-row">
+              <button @click="settings.exportWidth = originalWidth; settings.exportHeight = originalHeight" style="font-size: 0.7rem;">Reset to Original</button>
+              <button @click="settings.exportWidth = Math.round(originalWidth/2); settings.exportHeight = Math.round(originalHeight/2)" style="font-size: 0.7rem;">50% Scale</button>
+            </div>
+          </div>
           <div class="control-group">
             <label>Target FPS</label>
             <input type="number" x-model="settings.fps" min="1" max="120" />

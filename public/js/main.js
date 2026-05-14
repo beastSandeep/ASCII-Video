@@ -56,9 +56,17 @@ function appData() {
       stability: 0.5,
       showVisualizer: false,
       visualizerIntensity: 1.0,
+      exportStart: 0,
+      exportEnd: 0,
+      exportWidth: 0,
+      exportHeight: 0,
+      exportMethod: 'deterministic', // 'deterministic' or 'realtime'
+      exportChunkSize: 5, // 0 means single chunk
     },
 
     // UI View (Not part of settings/export)
+    originalWidth: 0,
+    originalHeight: 0,
     uiScale: 1.0,
     uiPan: { x: 0, y: 0 },
     isDragging: false,
@@ -101,6 +109,7 @@ function appData() {
       });
       this.video.addEventListener("loadedmetadata", () => {
         this.duration = this.video.duration;
+        this.settings.exportEnd = Math.floor(this.video.duration * 100) / 100;
       });
       this.video.addEventListener("ended", () => {
         if (this.settings.loop && !this.isCamera) {
@@ -112,68 +121,46 @@ function appData() {
         }
       });
 
-      // Mouse wheel zoom
-      this.canvas.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        const delta = -e.deltaY * 0.001;
-        this.uiScale = Math.min(Math.max(0.1, this.uiScale + delta), 10);
-      });
-
-      // Panning
-      this.canvas.addEventListener('mousedown', (e) => {
-        if (e.button === 0) {
-          this.isDragging = true;
-          this.lastMouse = { x: e.clientX, y: e.clientY };
-        }
-      });
-      window.addEventListener('mousemove', (e) => {
-        if (this.isDragging) {
-          const dx = e.clientX - this.lastMouse.x;
-          const dy = e.clientY - this.lastMouse.y;
-          this.uiPan.x += dx;
-          this.uiPan.y += dy;
-          this.lastMouse = { x: e.clientX, y: e.clientY };
-        }
-      });
-      window.addEventListener('mouseup', () => this.isDragging = false);
-
       // Global Key Listeners
       window.addEventListener('keydown', (e) => {
         const active = document.activeElement;
         const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName);
-        
-        // If typing in a text/number field, allow default behavior
-        if (isInput && ['text', 'number', 'password', 'email', 'textarea'].includes(active.type || active.tagName.toLowerCase())) {
-          return;
-        }
+        if (isInput && ['text', 'number', 'password', 'email', 'textarea'].includes(active.type || active.tagName.toLowerCase())) return;
 
         const key = e.key.toLowerCase();
-
-        if (key === ' ' || e.code === 'Space') {
-          e.preventDefault();
-          this.togglePlay();
-        } 
-        else if (key === 'arrowleft') {
-          e.preventDefault();
-          this.stepFrame(-1);
-        } 
-        else if (key === 'arrowright') {
-          e.preventDefault();
-          this.stepFrame(1);
-        } 
-        else if (key === 'm') {
-          e.preventDefault();
-          this.toggleMute();
-        } 
-        else if (key === 'l') {
-          e.preventDefault();
-          this.toggleLoop();
-        } 
-        else if (key === 's') {
-          e.preventDefault();
-          this.takeSnapshot();
-        }
+        if (key === ' ' || e.code === 'Space') { e.preventDefault(); this.togglePlay(); } 
+        else if (key === 'arrowleft') { e.preventDefault(); this.stepFrame(-1); } 
+        else if (key === 'arrowright') { e.preventDefault(); this.stepFrame(1); } 
+        else if (key === 'm') { e.preventDefault(); this.toggleMute(); } 
+        else if (key === 'l') { e.preventDefault(); this.toggleLoop(); } 
+        else if (key === 's') { e.preventDefault(); this.takeSnapshot(); }
       });
+    },
+
+    // UI View Handlers
+    handleWheel(e) {
+      const delta = -e.deltaY * 0.001;
+      this.uiScale = Math.min(Math.max(0.1, this.uiScale + delta), 10);
+      this.drawFrame();
+    },
+    startPan(e) {
+      if (e.button === 0) {
+        this.isDragging = true;
+        this.lastMouse = { x: e.clientX, y: e.clientY };
+      }
+    },
+    handlePan(e) {
+      if (this.isDragging) {
+        const dx = e.clientX - this.lastMouse.x;
+        const dy = e.clientY - this.lastMouse.y;
+        this.uiPan.x += dx;
+        this.uiPan.y += dy;
+        this.lastMouse = { x: e.clientX, y: e.clientY };
+        this.drawFrame();
+      }
+    },
+    endPan() {
+      this.isDragging = false;
     },
 
     initUniforms() {
@@ -201,6 +188,7 @@ function appData() {
     syncUniforms(customTime) {
       const s = this.settings;
       const u = this.uniforms;
+      if (!u.u_charSize) return;
 
       gl.uniform1f(u.u_charSize, parseFloat(s.charSize));
       gl.uniform1f(u.u_charCount, charCount);
@@ -229,7 +217,6 @@ function appData() {
       gl.uniform1f(u.u_edgeThreshold, parseFloat(s.edgeThreshold));
       gl.uniform1f(u.u_dirEdgeThreshold, parseFloat(s.dirEdgeThreshold));
       
-      // Audio & Stability
       gl.uniform1fv(u.u_audioData, this.audio.floatData);
       gl.uniform1i(u.u_showVisualizer, s.showVisualizer ? 1 : 0);
       gl.uniform1f(u.u_visualizerIntensity, parseFloat(s.visualizerIntensity));
@@ -238,7 +225,6 @@ function appData() {
       const time = customTime !== undefined ? customTime : (performance.now() - this.startTime) / 1000.0;
       gl.uniform1f(u.u_time, time);
 
-      // Detailed Post-Processing
       gl.uniform1i(u.u_bloom, s.bloom ? 1 : 0);
       gl.uniform1f(u.u_bloomThreshold, parseFloat(s.bloomThreshold));
       gl.uniform1f(u.u_bloomSoft, parseFloat(s.bloomSoft));
@@ -265,34 +251,23 @@ function appData() {
       gl.uniform1f(u.u_crtAmount, parseFloat(s.crtAmount));
 
       gl.uniform1i(u.u_phosphor, s.phosphor ? 1 : 0);
-      const phos = {
-        Green: [0.0, 1.0, 0.2],
-        Amber: [1.0, 0.7, 0.0],
-        Blue: [0.2, 0.5, 1.0],
-        White: [1.0, 1.0, 1.0]
-      }[s.phosphorColor] || [0, 1, 0];
+      const phos = { Green: [0.0, 1.0, 0.2], Amber: [1.0, 0.7, 0.0], Blue: [0.2, 0.5, 1.0], White: [1.0, 1.0, 1.0] }[s.phosphorColor] || [0, 1, 0];
       gl.uniform3f(u.u_phosphorColor, phos[0], phos[1], phos[2]);
 
       gl.uniform2f(u.u_resolution, this.canvas.width, this.canvas.height);
     },
 
     drawFrame(customTime) {
-      if (this.video.readyState < 2) return;
-
+      if (!this.video || this.video.readyState < 2) return;
       gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, videoTexture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, this.video);
-
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
-
       gl.uniform1i(this.uniforms.u_video, 0);
       gl.uniform1i(this.uniforms.u_atlas, 1);
-
       this.syncUniforms(customTime);
-
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     },
 
@@ -300,9 +275,7 @@ function appData() {
       if (this.running || this.isExporting || this.settings.grain || this.settings.bloom) {
         if (this.audio.analyser) {
           this.audio.analyser.getByteFrequencyData(this.audio.dataArray);
-          for(let i=0; i<64; i++) {
-            this.audio.floatData[i] = this.audio.dataArray[i] / 255.0;
-          }
+          for(let i=0; i<64; i++) this.audio.floatData[i] = this.audio.dataArray[i] / 255.0;
         }
         this.drawFrame();
       }
@@ -314,106 +287,75 @@ function appData() {
       try {
           this.audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
           this.audio.analyser = this.audio.ctx.createAnalyser();
-          this.audio.analyser.fftSize = 128; // 64 bins
-          
+          this.audio.analyser.fftSize = 128;
           this.audio.previewGain = this.audio.ctx.createGain();
           this.audio.recorderDest = this.audio.ctx.createMediaStreamDestination();
-          
           this.audio.source = this.audio.ctx.createMediaElementSource(this.video);
-          
-          // Source -> Analyser
           this.audio.source.connect(this.audio.analyser);
-          
-          // Path A: Analyser -> Preview Gain -> Speakers (User hears this)
           this.audio.analyser.connect(this.audio.previewGain);
           this.audio.previewGain.connect(this.audio.ctx.destination);
-          
-          // Path B: Analyser -> Recorder Destination (Recorder captures this)
           this.audio.analyser.connect(this.audio.recorderDest);
-          
-          // Keep video element at 1.0 volume internally
           this.video.volume = 1.0;
           this.updateVolume();
-      } catch(e) {
-          console.error("Audio init failed:", e);
-      }
+      } catch(e) { console.error("Audio init failed:", e); }
     },
 
     formatTime(seconds) {
       if (!seconds || isNaN(seconds)) return "0:00";
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      const s = Math.floor(seconds % 60);
-      if (h > 0) {
-        return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+      const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = Math.floor(seconds % 60);
+      return h > 0 ? `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}` : `${m}:${s.toString().padStart(2, "0")}`;
+    },
+
+    seek(time) { 
+      this.video.currentTime = time; 
+      if (!this.running) {
+        const onSeeked = () => {
+          this.video.removeEventListener("seeked", onSeeked);
+          this.drawFrame();
+        };
+        this.video.addEventListener("seeked", onSeeked);
       }
-      return `${m}:${s.toString().padStart(2, "0")}`;
     },
-
-    seek(time) {
-      this.video.currentTime = time;
-      if (!this.running) this.drawFrame();
-    },
-
     stepFrame(direction) {
       if (this.running) this.togglePlay();
       const frameTime = 1 / (this.settings.fps || 30);
       this.video.currentTime = Math.max(0, Math.min(this.duration, this.video.currentTime + direction * frameTime));
-      this.drawFrame();
+      
+      const onSeeked = () => {
+        this.video.removeEventListener("seeked", onSeeked);
+        this.drawFrame();
+      };
+      this.video.addEventListener("seeked", onSeeked);
     },
 
-    toggleLoop() {
-      this.settings.loop = !this.settings.loop;
-    },
-
+    toggleLoop() { this.settings.loop = !this.settings.loop; },
     updateVolume() {
-      if (this.audio.previewGain) {
-          this.audio.previewGain.gain.setTargetAtTime(
-              this.settings.muted ? 0 : this.settings.volume,
-              this.audio.ctx.currentTime,
-              0.01
-          );
+      if (this.audio.previewGain && this.audio.ctx) {
+          this.audio.previewGain.gain.setTargetAtTime(this.settings.muted ? 0 : this.settings.volume, this.audio.ctx.currentTime, 0.01);
       }
-      if (this.settings.volume > 0) this.settings.muted = false;
     },
-
-    toggleMute() {
-      this.settings.muted = !this.settings.muted;
-      this.updateVolume();
-    },
-
+    toggleMute() { this.settings.muted = !this.settings.muted; this.updateVolume(); },
     togglePlay() {
       this.running = !this.running;
-      if (this.running) {
-        this.video.play();
-        this.startTime = performance.now() - (this.video.currentTime * 1000);
-      } else {
-        this.video.pause();
-      }
+      if (this.running) { this.video.play(); this.startTime = performance.now() - (this.video.currentTime * 1000); } 
+      else { this.video.pause(); }
     },
 
     loadVideo(e) {
       const file = e.target.files[0];
       if (!file) return;
-
-      // Revoke old object URL to free memory
-      if (this.video.src && this.video.src.startsWith("blob:")) {
-        URL.revokeObjectURL(this.video.src);
-      }
-
-      if (this.video.srcObject) {
-        this.video.srcObject.getTracks().forEach(t => t.stop());
-        this.video.srcObject = null;
-      }
-      this.isCamera = false;
-      this.hasSource = true;
+      if (this.video.src && this.video.src.startsWith("blob:")) URL.revokeObjectURL(this.video.src);
+      if (this.video.srcObject) { this.video.srcObject.getTracks().forEach(t => t.stop()); this.video.srcObject = null; }
+      this.isCamera = false; this.hasSource = true;
       this.video.src = URL.createObjectURL(file);
       this.video.onloadeddata = () => {
         this.initAudio();
-        this.canvas.width = this.video.videoWidth;
-        this.canvas.height = this.video.videoHeight;
-        this.estimateFPS();
-        this.drawFrame();
+        this.originalWidth = this.video.videoWidth; this.originalHeight = this.video.videoHeight;
+        this.settings.exportWidth = this.originalWidth; this.settings.exportHeight = this.originalHeight;
+        this.canvas.width = this.originalWidth; this.canvas.height = this.originalHeight;
+        this.uiScale = 1.0; this.uiPan = { x: 0, y: 0 };
+        this.estimateFPS(); this.drawFrame();
+        e.target.value = ""; // Clear input
       };
     },
 
@@ -421,56 +363,40 @@ function appData() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         this.isCamera = true;
-
-        // Revoke old object URL if switching from file to webcam
-        if (this.video.src && this.video.src.startsWith("blob:")) {
-          URL.revokeObjectURL(this.video.src);
-        }
-
-        this.video.src = "";
-        this.video.srcObject = stream;
+        if (this.video.src && this.video.src.startsWith("blob:")) URL.revokeObjectURL(this.video.src);
+        this.video.src = ""; this.video.srcObject = stream;
         this.video.onloadedmetadata = () => {
           this.initAudio();
-          this.canvas.width = this.video.videoWidth;
-          this.canvas.height = this.video.videoHeight;
-          this.settings.fps = 30;
-          this.running = true;
-          this.video.play();
+          this.originalWidth = this.video.videoWidth; this.originalHeight = this.video.videoHeight;
+          this.settings.exportWidth = this.originalWidth; this.settings.exportHeight = this.originalHeight;
+          this.canvas.width = this.originalWidth; this.canvas.height = this.originalHeight;
+          this.settings.fps = 30; this.running = true; this.video.play();
         };
-      } catch (err) {
-        alert("Camera/Audio access denied: " + err.message);
-      }
+      } catch (err) { alert("Camera/Audio access denied: " + err.message); }
     },
 
     estimateFPS() {
-      if (!this.video.requestVideoFrameCallback) {
-        this.settings.fps = 30;
-        return;
-      }
+      if (!this.video.requestVideoFrameCallback) { this.settings.fps = 30; return; }
       let frames = [];
       const check = (now, metadata) => {
         frames.push(metadata.presentationTime);
-        if (frames.length < 10) {
-          this.video.requestVideoFrameCallback(check);
-        } else {
+        if (frames.length < 10) { this.video.requestVideoFrameCallback(check); } 
+        else {
           const diffs = [];
           for (let i = 1; i < frames.length; i++) diffs.push(frames[i] - frames[i - 1]);
           const avg = diffs.reduce((a, b) => a + b) / diffs.length;
           const detected = Math.round(1000 / avg);
           this.settings.fps = detected > 0 ? detected : 30;
-          this.video.pause();
-          this.video.currentTime = 0;
+          this.video.pause(); this.video.currentTime = 0;
         }
       };
-      this.video.play();
-      this.video.requestVideoFrameCallback(check);
+      this.video.play(); this.video.requestVideoFrameCallback(check);
     },
 
     updateCharset() {
       const atlas = createAtlas(this.settings.charset);
       window.charCount = atlas.count;
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas.canvas);
       if (!this.running && !this.isExporting) this.drawFrame();
     },
@@ -478,32 +404,20 @@ function appData() {
     savePreset() {
       const blob = new Blob([JSON.stringify(this.settings, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "ascii_preset.json";
-      a.click();
+      const a = document.createElement("a"); a.href = url; a.download = "ascii_preset.json"; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 100);
     },
 
     loadPreset(e) {
-      const file = e.target.files[0];
-      if (!file) return;
+      const file = e.target.files[0]; if (!file) return;
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
           const loaded = JSON.parse(e.target.result);
-          // Merge into settings to maintain reactivity
           Object.assign(this.settings, loaded);
-          
-          this.updateCharset();
-          this.updateVolume();
-          this.drawFrame();
-          
-          // Clear input so same file can be loaded again
+          this.updateCharset(); this.updateVolume(); this.drawFrame();
           e.target.value = "";
-        } catch (err) {
-          alert("Failed to load preset: Invalid JSON file.");
-        }
+        } catch (err) { alert("Failed to load preset: Invalid JSON file."); }
       };
       reader.readAsText(file);
     },
@@ -512,150 +426,139 @@ function appData() {
       this.drawFrame();
       const url = this.canvas.toDataURL(this.snapshotFormat);
       const ext = this.snapshotFormat.split("/")[1];
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `ascii_snapshot.${ext}`;
-      a.click();
+      const a = document.createElement("a"); a.href = url; a.download = `ascii_snapshot.${ext}`; a.click();
     },
 
     async exportVideo() {
-      if (!this.video.src && !this.video.srcObject) {
-        alert("No source loaded.");
-        return;
-      }
-
-      const wasMuted = this.video.muted;
-      if (this.settings.recordAudio && !this.isCamera) {
-          this.video.muted = false;
-      }
-
-      this.running = false;
-      this.video.pause();
-      if (!this.isCamera) this.video.currentTime = 0;
-      
-      this.isExporting = true;
-      this.renderProgress = 0;
-      this.renderMsg = "Initializing...";
-
-      // Initialize session
-      const initRes = await fetch("/upload-init", { method: "POST" });
-      const { sessionId } = await initRes.json();
-
-      // Chunk Queue to ensure sequential uploads
-      let chunkQueue = Promise.resolve();
-      let uploadErrors = 0;
-
-      const videoStream = this.canvas.captureStream(this.settings.fps);
-      const combinedStream = new MediaStream([videoStream.getVideoTracks()[0]]);
-
-      if (this.settings.recordAudio) {
-          let audioTrack = null;
-          if (this.isCamera && this.video.srcObject) {
-              audioTrack = this.video.srcObject.getAudioTracks()[0];
-          } else if (this.audio.recorderDest) {
-              audioTrack = this.audio.recorderDest.stream.getAudioTracks()[0];
-          }
-
-          if (audioTrack) {
-              combinedStream.addTrack(audioTrack);
-          }
-      }
-
-      this.recorder = new MediaRecorder(combinedStream, {
-        mimeType: "video/webm;codecs=vp9,opus",
-        videoBitsPerSecond: 20000000, 
-      });
-
-      this.recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunkQueue = chunkQueue.then(async () => {
-            const formData = new FormData();
-            formData.append("sessionId", sessionId);
-            formData.append("chunk", e.data);
-            try {
-              const res = await fetch("/upload-chunk", { method: "POST", body: formData });
-              if (!res.ok) throw new Error("Chunk failed");
-            } catch (err) {
-              uploadErrors++;
-              console.error("Upload error:", err);
-            }
-          });
+      if (!this.video.src && !this.video.srcObject) { alert("No source loaded."); return; }
+      const prevWidth = this.canvas.width, prevHeight = this.canvas.height, wasMuted = this.video.muted;
+      this.running = false; this.video.pause(); this.isExporting = true;
+      this.renderProgress = 0; this.renderMsg = "Initializing segmented export...";
+      this.canvas.width = this.settings.exportWidth; this.canvas.height = this.settings.exportHeight;
+      const segmentIds = [], totalDuration = this.settings.exportEnd - this.settings.exportStart;
+      this.video.currentTime = this.settings.exportStart;
+      try {
+        while (this.video.currentTime < this.settings.exportEnd && this.isExporting) {
+          const start = this.video.currentTime;
+          const chunkSize = parseFloat(this.settings.exportChunkSize);
+          const end = (chunkSize > 0) ? Math.min(start + chunkSize, this.settings.exportEnd) : this.settings.exportEnd;
+          if (end - start <= 0) break;
+          this.renderMsg = `Capturing segment: ${this.formatTime(start)} - ${this.formatTime(end)}`;
+          let blob = (this.settings.exportMethod === 'deterministic') ? await this.recordSegmentDeterministic(start, end) : await this.recordSegmentRealtime(start, end);
+          this.renderMsg = `Processing segment: ${this.formatTime(start)} - ${this.formatTime(end)}...`;
+          const segmentId = await this.uploadAndProcessSegment(blob);
+          await this.waitForSegment(segmentId);
+          segmentIds.push(segmentId);
+          blob = null;
+          const processedTime = this.video.currentTime - this.settings.exportStart;
+          this.renderProgress = Math.round((processedTime / totalDuration) * 90);
+          if (this.video.currentTime >= this.settings.exportEnd || this.video.ended) break;
         }
-      };
-
-      this.recorder.onstop = async () => {
-        this.video.muted = wasMuted;
-        this.renderMsg = "Waiting for uploads to finish...";
-        
-        // Wait for all chunks to be uploaded
-        await chunkQueue;
-        
-        if (uploadErrors > 0) {
-          alert(`Warning: ${uploadErrors} chunks failed to upload. Video might be corrupted.`);
-        }
-
-        this.renderMsg = "Starting backend processing...";
-        
-        try {
-          const res = await fetch("/upload-finish", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId, fps: this.settings.fps })
-          });
-          
-          if (!res.ok) throw new Error("Processing trigger failed");
-          const { jobId } = await res.json();
-
-          // Poll for status
-          const pollStatus = async () => {
-            const sRes = await fetch(`/job-status/${jobId}`);
-            const job = await sRes.json();
-
-            if (job.status === "completed") {
-              this.renderMsg = "Done!";
-              const a = document.createElement("a");
-              a.href = job.downloadUrl;
-              a.download = "ascii_final.mp4";
-              a.click();
-              this.isExporting = false;
-            } else if (job.status === "error") {
-              alert("FFmpeg Error: " + job.error);
-              this.isExporting = false;
-            } else {
-              this.renderMsg = `Processing: ${job.progress}% (Backend)`;
-              setTimeout(pollStatus, 1000);
-            }
-          };
-
-          pollStatus();
-        } catch (err) {
-          alert("Error: " + err.message);
-          this.isExporting = false;
-        }
-      };
-
-      this.recorder.start(2000); 
-      this.video.play();
-
-      if (!this.isCamera) {
-          const interval = setInterval(() => {
-            const prog = Math.round((this.video.currentTime / this.video.duration) * 100);
-            this.renderMsg = `Recording: ${prog}%`;
-            this.drawFrame(this.video.currentTime);
-            if (this.video.ended) {
-              clearInterval(interval);
-              this.recorder.stop();
-              this.video.pause();
-            }
-          }, 16);
+        if (!this.isExporting) throw new Error("Export cancelled");
+        this.renderMsg = "Stitching final video...";
+        const res = await fetch("/stitch-segments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ segmentIds }) });
+        const { jobId } = await res.json(); this.pollFinalJob(jobId);
+      } catch (err) {
+        console.error("Export failed:", err);
+        if (this.renderMsg !== "Export cancelled.") alert("Export failed: " + err.message);
+        this.isExporting = false;
+      } finally {
+        this.canvas.width = prevWidth; this.canvas.height = prevHeight; this.video.muted = wasMuted; this.drawFrame();
       }
     },
 
-    stopRecording() {
-        if (this.recorder && this.recorder.state === "recording") {
-            this.recorder.stop();
-            this.video.pause();
+    recordSegmentDeterministic(start, end) {
+      return new Promise(async (resolve, reject) => {
+        try {
+          const fps = this.settings.fps, frameDuration = 1 / fps;
+          let currentTime = start;
+          const videoStream = this.canvas.captureStream(0);
+          const combinedStream = new MediaStream([videoStream.getVideoTracks()[0]]);
+          if (this.settings.recordAudio) {
+            const audioTrack = this.isCamera ? this.video.srcObject?.getAudioTracks()[0] : this.audio.recorderDest?.stream.getAudioTracks()[0];
+            if (audioTrack) combinedStream.addTrack(audioTrack);
+          }
+          const recorder = new MediaRecorder(combinedStream, { mimeType: "video/webm;codecs=vp9", videoBitsPerSecond: 50000000 });
+          let chunks = []; recorder.ondataavailable = e => chunks.push(e.data);
+          recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
+          recorder.start(); this.video.pause(); this.video.muted = !this.settings.recordAudio;
+          while (currentTime < end && this.isExporting) {
+            this.video.currentTime = currentTime;
+            await new Promise(r => {
+              const onSeeked = () => { this.video.removeEventListener("seeked", onSeeked); r(); };
+              this.video.addEventListener("seeked", onSeeked);
+              if (this.video.readyState >= 4 && this.video.currentTime === currentTime) onSeeked();
+            });
+            this.drawFrame(currentTime); combinedStream.getVideoTracks()[0].requestFrame(); currentTime += frameDuration;
+          }
+          recorder.stop();
+        } catch (err) { reject(err); }
+      });
+    },
+
+    recordSegmentRealtime(start, end) {
+      return new Promise(resolve => {
+        this.video.currentTime = start;
+        const videoStream = this.canvas.captureStream(this.settings.fps);
+        const combinedStream = new MediaStream([videoStream.getVideoTracks()[0]]);
+        if (this.settings.recordAudio) {
+            const audioTrack = this.isCamera ? this.video.srcObject?.getAudioTracks()[0] : this.audio.recorderDest?.stream.getAudioTracks()[0];
+            if (audioTrack) combinedStream.addTrack(audioTrack);
         }
-    }
+        const recorder = new MediaRecorder(combinedStream, { mimeType: "video/webm;codecs=vp9", videoBitsPerSecond: 50000000 });
+        let chunks = []; recorder.ondataavailable = e => chunks.push(e.data);
+        recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
+        recorder.start(); this.video.muted = !this.settings.recordAudio; this.video.play();
+        const check = () => {
+          this.drawFrame(this.video.currentTime);
+          if (this.video.currentTime >= end || this.video.ended) { this.video.pause(); recorder.stop(); } 
+          else if (this.isExporting) { requestAnimationFrame(check); } 
+          else { recorder.stop(); }
+        };
+        check();
+      });
+    },
+
+    async uploadAndProcessSegment(blob) {
+      const formData = new FormData();
+      formData.append("segment", blob); formData.append("fps", this.settings.fps);
+      formData.append("width", this.settings.exportWidth); formData.append("height", this.settings.exportHeight);
+      const res = await fetch("/process-segment", { method: "POST", body: formData });
+      if (!res.ok) throw new Error("Segment upload failed");
+      const { segmentId } = await res.json(); return segmentId;
+    },
+
+    async waitForSegment(segmentId) {
+      return new Promise((resolve, reject) => {
+        const poll = async () => {
+          try {
+            const res = await fetch(`/job-status/${segmentId}`);
+            const job = await res.json();
+            if (job.status === "completed") resolve(segmentId);
+            else if (job.status === "error") reject(new Error("Segment processing failed"));
+            else setTimeout(poll, 1000);
+          } catch (e) { reject(e); }
+        };
+        poll();
+      });
+    },
+
+    pollFinalJob(jobId) {
+      const poll = async () => {
+        try {
+          const res = await fetch(`/job-status/${jobId}`);
+          const job = await res.json();
+          if (job.status === "completed") {
+            this.renderMsg = "Done!"; this.renderProgress = 100;
+            const a = document.createElement("a"); a.href = job.downloadUrl; a.download = "ascii_final.mp4"; a.click();
+            setTimeout(() => this.isExporting = false, 2000);
+          } else if (job.status === "error") { alert("Stitching Error: " + job.error); this.isExporting = false; } 
+          else { this.renderMsg = "Stitching final video..."; this.renderProgress = 75; setTimeout(poll, 1000); }
+        } catch (err) { alert("Polling error: " + err.message); this.isExporting = false; }
+      };
+      poll();
+    },
+
+    stopRecording() { if (this.isExporting) { this.isExporting = false; this.renderMsg = "Export cancelled."; this.video.pause(); } }
   };
 }
