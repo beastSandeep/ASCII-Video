@@ -18,19 +18,19 @@ const jobs = new Map();
 app.post("/upload-init", (req, res) => {
   const sessionId = `upload_${Date.now()}`;
   const tempPath = path.join("uploads", `${sessionId}.webm`);
-  activeUploads.set(sessionId, tempPath);
+  activeUploads.set(sessionId, { path: tempPath, startTime: Date.now() });
   res.json({ sessionId });
 });
 
 // Receive a chunk and append it to the file
 app.post("/upload-chunk", upload.single("chunk"), (req, res) => {
   const { sessionId } = req.body;
-  const tempPath = activeUploads.get(sessionId);
+  const session = activeUploads.get(sessionId);
 
-  if (!tempPath) return res.status(400).send("Invalid session ID");
+  if (!session) return res.status(400).send("Invalid session ID");
 
   try {
-    fs.appendFileSync(tempPath, req.file.buffer);
+    fs.appendFileSync(session.path, req.file.buffer);
     res.sendStatus(200);
   } catch (err) {
     console.error("Error appending chunk:", err);
@@ -41,18 +41,25 @@ app.post("/upload-chunk", upload.single("chunk"), (req, res) => {
 // Finalize and start background processing
 app.post("/upload-finish", (req, res) => {
   const { sessionId, fps } = req.body;
-  const tempPath = activeUploads.get(sessionId);
+  const session = activeUploads.get(sessionId);
 
-  if (!tempPath || !fs.existsSync(tempPath)) {
+  if (!session || !fs.existsSync(session.path)) {
     return res.status(400).send("File not found");
   }
 
+  const tempPath = session.path;
   const jobId = `job_${Date.now()}`;
   const outputName = `processed_${Date.now()}.mp4`;
   const outputPath = path.join("uploads", outputName);
   const targetFps = parseFloat(fps) || 30;
 
-  jobs.set(jobId, { status: "processing", progress: 0, downloadUrl: null, error: null });
+  jobs.set(jobId, { 
+    status: "processing", 
+    progress: 0, 
+    downloadUrl: null, 
+    error: null,
+    timestamp: Date.now() 
+  });
   
   // Return jobId immediately to avoid timeout
   res.json({ jobId });
@@ -125,5 +132,45 @@ app.get("/download/:name", (req, res) => {
 });
 
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
+
+// Periodic cleanup: every 15 minutes
+setInterval(() => {
+  const now = Date.now();
+  const ONE_HOUR = 60 * 60 * 1000;
+
+  console.log("[Cleanup] Starting periodic cleanup...");
+
+  // 1. Clean up jobs Map
+  for (const [jobId, job] of jobs.entries()) {
+    if (now - job.timestamp > ONE_HOUR) {
+      jobs.delete(jobId);
+    }
+  }
+
+  // 2. Clean up activeUploads Map
+  for (const [sessionId, session] of activeUploads.entries()) {
+    if (now - session.startTime > ONE_HOUR) {
+      // If file exists, try to delete it
+      if (fs.existsSync(session.path)) {
+        try { fs.unlinkSync(session.path); } catch (e) {}
+      }
+      activeUploads.delete(sessionId);
+    }
+  }
+
+  // 3. Clean up physical files in uploads/ that might be orphaned
+  fs.readdir("uploads", (err, files) => {
+    if (err) return;
+    files.forEach(file => {
+      const filePath = path.join("uploads", file);
+      fs.stat(filePath, (err, stats) => {
+        if (err) return;
+        if (now - stats.mtimeMs > ONE_HOUR) {
+          fs.unlink(filePath, () => {});
+        }
+      });
+    });
+  });
+}, 15 * 60 * 1000);
 
 app.listen(3000, () => console.log("http://localhost:3000"));

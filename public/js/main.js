@@ -395,6 +395,12 @@ function appData() {
     loadVideo(e) {
       const file = e.target.files[0];
       if (!file) return;
+
+      // Revoke old object URL to free memory
+      if (this.video.src && this.video.src.startsWith("blob:")) {
+        URL.revokeObjectURL(this.video.src);
+      }
+
       if (this.video.srcObject) {
         this.video.srcObject.getTracks().forEach(t => t.stop());
         this.video.srcObject = null;
@@ -415,6 +421,12 @@ function appData() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         this.isCamera = true;
+
+        // Revoke old object URL if switching from file to webcam
+        if (this.video.src && this.video.src.startsWith("blob:")) {
+          URL.revokeObjectURL(this.video.src);
+        }
+
         this.video.src = "";
         this.video.srcObject = stream;
         this.video.onloadedmetadata = () => {
@@ -470,6 +482,7 @@ function appData() {
       a.href = url;
       a.download = "ascii_preset.json";
       a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 100);
     },
 
     loadPreset(e) {
